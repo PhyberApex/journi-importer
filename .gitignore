@@ -1,0 +1,5 @@
+node_modules/
+plugin.zip
+*.log
+.DS_Store
+.trek-dev/

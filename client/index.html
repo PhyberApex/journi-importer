@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Journi Importer</title>
+  <!-- trek:ui -->
+  <style>
+    .page { max-width: 860px; margin: 0 auto; padding: 18px 16px 32px; }
+    .hero { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+    .hero-icon { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--accent-subtle); color: var(--accent); }
+    .hero h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
+    .lead { color: var(--text-muted); margin: 0 0 18px; }
+    .card { padding: 16px; margin-bottom: 14px; }
+    .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+    .card-title { font-weight: 600; font-size: 15px; margin: 0; }
+    .form-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .form-row .trek-input { flex: 1; min-width: 180px; }
+    .note { font-size: 12px; color: var(--text-faint); margin-top: 8px; line-height: 1.45; }
+    .divider { display: flex; align-items: center; gap: 10px; color: var(--text-faint); font-size: 12px; margin: 14px 0; }
+    .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--border-primary); }
+    .journal { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border-primary); border-radius: var(--radius-md); background: var(--bg-card); cursor: pointer; }
+    .journal + .journal { margin-top: 8px; }
+    .journal:hover { background: var(--bg-hover); }
+    .journal input { width: 16px; height: 16px; flex: none; accent-color: var(--accent); }
+    .journal-main { flex: 1; min-width: 0; }
+    .journal-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .journal-meta { font-size: 12px; color: var(--text-muted); }
+    .journal-chips { display: flex; gap: 6px; flex: none; }
+    .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+    .option { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+    .option input { accent-color: var(--accent); }
+    .run { padding: 12px 14px; border: 1px solid var(--border-primary); border-radius: var(--radius-md); background: var(--bg-card); }
+    .run + .run { margin-top: 10px; }
+    .run-head { display: flex; align-items: center; gap: 10px; }
+    .run-title { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .run-status { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+    .bar { height: 6px; border-radius: 999px; background: var(--bg-tertiary); overflow: hidden; margin-top: 8px; }
+    .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .25s var(--trek-ease); }
+    .bar.ok > div { background: var(--success); }
+    .bar.bad > div { background: var(--danger); }
+    .run-errors { font-size: 12px; color: var(--danger); margin-top: 6px; white-space: pre-wrap; }
+    .hidden { display: none !important; }
+    .spin { display: inline-block; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<div class="page">
+  <div class="hero">
+    <div class="hero-icon">
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
+    </div>
+    <h1>Journi Importer</h1>
+  </div>
+  <p class="lead">Bring your Journi journals into TREK as journeys — every moment becomes an entry, pictures included.</p>
+
+  <section class="trek-glass card" id="connect-card">
+    <div class="card-head"><h2 class="card-title">Sign in to Journi</h2></div>
+    <div class="form-row">
+      <input class="trek-input" type="email" id="email" placeholder="Journi email" autocomplete="off" />
+      <input class="trek-input" type="password" id="password" placeholder="Journi password" autocomplete="off" />
+      <button class="trek-btn trek-btn--primary" id="login-btn">Sign in</button>
+    </div>
+    <div class="note">Your password goes once from this page to your TREK server, which signs in to Journi with it and keeps only the resulting session — in memory, for an hour or until you sign out. Nothing is written to disk.</div>
+    <div class="divider">or paste a public journal link</div>
+    <div class="form-row">
+      <input class="trek-input" type="text" id="link" placeholder="https://www.journiapp.com/app/j/my-journal" />
+      <button class="trek-btn trek-btn--secondary" id="link-btn">Add journal</button>
+    </div>
+  </section>
+
+  <section class="trek-glass card hidden" id="pick-card">
+    <div class="card-head">
+      <h2 class="card-title" id="pick-title">Your journals</h2>
+      <div class="trek-cluster" id="account-row"></div>
+    </div>
+    <div id="journal-list"></div>
+    <div class="toolbar">
+      <label class="option"><input type="checkbox" id="opt-photos" checked /> Also import the pictures of every moment</label>
+      <button class="trek-btn trek-btn--primary" id="import-btn">Import selected</button>
+    </div>
+  </section>
+
+  <section class="trek-glass card hidden" id="run-card">
+    <div class="card-head"><h2 class="card-title">Importing</h2></div>
+    <div id="run-list"></div>
+    <div class="toolbar hidden" id="done-row">
+      <span class="trek-muted" id="done-summary"></span>
+      <div class="trek-cluster">
+        <button class="trek-btn trek-btn--danger" id="undo-btn">Undo this import</button>
+        <button class="trek-btn trek-btn--secondary" id="again-btn">Import more</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id)
+const escapeHtml = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const call = (path, body) => trek.invoke(path, { method: 'POST', body })
+const notify = (level, message) => trek.notify(level, message, Math.min(15000, Math.max(4000, message.length * 90)))
+
+const IMPORT_WINDOW_ITEMS = 40
+const IMPORT_WINDOW_BYTES = 60000
+const PICTURE_PAUSE_MS = 250
+const SESSION_KEY = 'journi-session'
+
+const state = {
+  session: null,
+  firstName: null,
+  journals: [],
+  runs: [],
+}
+
+// ── Sign in ──────────────────────────────────────────────────────────────────
+
+const setBusy = (btn, busy, busyLabel) => {
+  if (busy) { btn.dataset.label = btn.textContent; btn.textContent = busyLabel; btn.disabled = true }
+  else { btn.textContent = btn.dataset.label || btn.textContent; btn.disabled = false }
+}
+
+async function signIn() {
+  const email = $('email').value.trim()
+  const password = $('password').value
+  if (!email || !password) return notify('warning', 'Enter your Journi email and password first.')
+  setBusy($('login-btn'), true, 'Signing in…')
+  try {
+    const result = await call('/login', { email, password })
+    if (!result?.ok) return notify('error', result?.error || 'Journi sign-in failed.')
+    $('password').value = ''
+    applySession(result.session, result.firstName, result.journals)
+    await trek.session.set(SESSION_KEY, { token: result.session, firstName: result.firstName })
+    notify('success', `Signed in to Journi${result.firstName ? ' as ' + result.firstName : ''} — ${result.journals.length} journal${result.journals.length === 1 ? '' : 's'} found.`)
+  } catch (e) {
+    notify('error', 'Could not sign in to Journi: ' + e.message)
+  } finally {
+    setBusy($('login-btn'), false)
+  }
+}
+
+function applySession(token, firstName, journals) {
+  state.session = token
+  state.firstName = firstName
+  const linked = state.journals.filter((j) => j.fromLink)
+  state.journals = [...journals.map((j) => ({ ...j, selected: false })), ...linked.filter((l) => !journals.some((j) => j.url === l.url))]
+  render()
+}
+
+async function restoreSession() {
+  const saved = await trek.session.get(SESSION_KEY).catch(() => undefined)
+  if (!saved?.token) return
+  const result = await call('/session', { session: saved.token }).catch(() => null)
+  if (result?.signedIn) applySession(saved.token, result.firstName, result.journals)
+  else await trek.session.remove(SESSION_KEY).catch(() => undefined)
+}
+
+async function signOut() {
+  if (state.session) await call('/logout', { session: state.session }).catch(() => undefined)
+  await trek.session.remove(SESSION_KEY).catch(() => undefined)
+  state.session = null
+  state.firstName = null
+  state.journals = state.journals.filter((j) => j.fromLink)
+  render()
+}
+
+async function addLink() {
+  const url = $('link').value.trim()
+  if (!url) return notify('warning', 'Paste a Journi journal link first.')
+  setBusy($('link-btn'), true, 'Fetching…')
+  try {
+    const result = await call('/journal', { url, session: state.session })
+    if (result?.error) return notify('error', result.error)
+    const name = result.journal.title || result.journal.url
+    if (result.private && !state.session) return notify('warning', `"${name}" is private in Journi. Sign in above to import your own private journals.`)
+    if (result.private) return notify('warning', `"${name}" is private and not on the account you signed in with.`)
+    if (!state.journals.some((j) => j.url === result.journal.url)) {
+      state.journals.push({ ...result.journal, selected: true, fromLink: true, moments: result.moments })
+    }
+    $('link').value = ''
+    render()
+  } catch (e) {
+    notify('error', 'Could not fetch that journal: ' + e.message)
+  } finally {
+    setBusy($('link-btn'), false)
+  }
+}
+
+// ── Journal list ─────────────────────────────────────────────────────────────
+
+const dayOf = (ms) => (ms ? new Date(ms).toISOString().slice(0, 10) : null)
+const dateRange = (j) => [dayOf(j.start), dayOf(j.end)].filter(Boolean).join(' → ')
+const plural = (n, word) => `${n} ${n === 1 ? word : word.replace(/y$/, 'ie') + 's'}`
+
+function journalMeta(j) {
+  return [dateRange(j), j.entryCount != null ? plural(j.entryCount, 'moment') : null, j.pictureCount != null ? plural(j.pictureCount, 'picture') : null]
+    .filter(Boolean).join(' · ')
+}
+
+function journalRow(j, idx) {
+  const chips = [
+    j.isPublic ? '' : '<span class="trek-chip trek-chip--warning">Private</span>',
+    j.fromLink ? '<span class="trek-chip trek-chip--info">From link</span>' : '',
+  ].join('')
+  return `<label class="journal">
+    <input type="checkbox" data-idx="${idx}" ${j.selected ? 'checked' : ''} />
+    <div class="journal-main">
+      <div class="journal-title">${escapeHtml(j.title || j.url)}</div>
+      <div class="journal-meta">${escapeHtml(journalMeta(j))}</div>
+    </div>
+    <div class="journal-chips">${chips}</div>
+  </label>`
+}
+
+function render() {
+  const signedIn = !!state.session
+  $('connect-card').classList.toggle('hidden', signedIn)
+  $('pick-card').classList.toggle('hidden', !state.journals.length)
+  $('pick-title').textContent = signedIn ? 'Your journals' : 'Journals from links'
+  $('account-row').innerHTML = signedIn
+    ? `<span class="trek-muted">Signed in${state.firstName ? ' as ' + escapeHtml(state.firstName) : ''}</span><button class="trek-btn trek-btn--ghost" id="logout-btn">Sign out</button>`
+    : ''
+  $('journal-list').innerHTML = state.journals.length
+    ? state.journals.map(journalRow).join('')
+    : '<p class="trek-muted">No journals on this Journi account yet.</p>'
+  $('logout-btn')?.addEventListener('click', signOut)
+  $('journal-list').querySelectorAll('input[type=checkbox]').forEach((cb) => {
+    cb.addEventListener('change', () => { state.journals[Number(cb.dataset.idx)].selected = cb.checked })
+  })
+}
+
+// ── Import ───────────────────────────────────────────────────────────────────
+
+function runRow(run) {
+  const bar = run.failed ? 'bad' : run.finished ? 'ok' : ''
+  const chip = run.undone ? ['trek-chip--warning', 'Undone'] : run.failed ? ['trek-chip--danger', 'Failed'] : run.finished ? ['trek-chip--success', 'Done'] : ['trek-chip--accent', '<span class="spin">⟳</span>']
+  return `<div class="run" id="run-${run.key}">
+    <div class="run-head">
+      <span class="run-title">${escapeHtml(run.title)}</span>
+      <span class="trek-chip ${chip[0]}">${chip[1]}</span>
+    </div>
+    <div class="run-status">${escapeHtml(run.status)}</div>
+    <div class="bar ${bar}"><div style="width:${run.percent}%"></div></div>
+    ${run.errors.length ? `<div class="run-errors">${escapeHtml(run.errors.slice(0, 8).join('\n'))}${run.errors.length > 8 ? `\n…and ${run.errors.length - 8} more` : ''}</div>` : ''}
+  </div>`
+}
+
+function renderRuns() {
+  $('run-list').innerHTML = state.runs.map(runRow).join('')
+}
+
+function updateRun(run, patch) {
+  Object.assign(run, patch)
+  const el = $('run-' + run.key)
+  if (el) el.outerHTML = runRow(run)
+}
+
+function importWindow(moments, from) {
+  const window = []
+  let bytes = 0
+  for (const m of moments.slice(from, from + IMPORT_WINDOW_ITEMS)) {
+    bytes += JSON.stringify(m).length
+    if (window.length && bytes > IMPORT_WINDOW_BYTES) break
+    window.push(m)
+  }
+  return window
+}
+
+async function loadMoments(journal) {
+  if (journal.moments) return journal.moments
+  const result = await call('/journal', { url: journal.url, session: state.session })
+  if (result?.error) throw new Error(result.error)
+  if (result.signedOut) {
+    await trek.session.remove(SESSION_KEY).catch(() => undefined)
+    throw new Error('Your Journi session has expired — sign in again')
+  }
+  if (result.private) throw new Error('Journi would not show the moments of this journal (it is private and you are not signed in as its owner)')
+  return result.moments
+}
+
+async function createEntries(run, journal, moments) {
+  const total = moments.length
+  let progress = { journeyId: null, next: 0, entries: 0, momentEntryIds: {}, done: false }
+  const journalInput = { title: journal.title, subtitle: dateRange(journal) || undefined }
+  for (let round = 0; !progress.done && round < 400; round++) {
+    const result = await call('/import', { journal: journalInput, moments: importWindow(moments, progress.next), offset: progress.next, total, progress })
+    if (result?.error) {
+      if (result.progress?.journeyId) run.refs.unshift({ type: 'journey', id: result.progress.journeyId })
+      throw new Error(result.error)
+    }
+    if (result.progress.journeyId && !run.refs.length) run.refs.unshift({ type: 'journey', id: result.progress.journeyId })
+    run.errors.push(...(result.errors || []))
+    progress = result.progress
+    updateRun(run, { status: `Creating entries… ${Math.min(progress.next, total)} / ${total}`, percent: total ? Math.round((progress.next / total) * 50) : 50 })
+  }
+  run.refs.push(...Object.values(progress.momentEntryIds).map((id) => ({ type: 'entry', id })))
+  return progress
+}
+
+async function attachPictures(run, moments, momentEntryIds) {
+  const jobs = moments.flatMap((m) => (momentEntryIds[m.id] ? m.pictures.map((p) => ({ entryId: momentEntryIds[m.id], guid: p.guid })) : []))
+  const total = jobs.length
+  let done = 0, forbidden = 0, failed = 0
+  for (const job of jobs) {
+    if (forbidden >= 3 && done === 0) {
+      run.errors.push('Journi refuses the pictures of this journal (private, and not fetched with its owner\'s session) — the entries were created without them')
+      break
+    }
+    const result = await call('/photo', { session: state.session, entryId: job.entryId, guid: job.guid }).catch((e) => ({ error: e.message }))
+    if (result?.ok) done++
+    else { failed++; if (result?.status === 403) forbidden++ }
+    updateRun(run, { status: `Fetching pictures… ${done} / ${total}`, percent: 50 + Math.round(((done + failed) / total) * 50) })
+    await pause(PICTURE_PAUSE_MS)
+  }
+  return { done, failed, total }
+}
+
+async function importJournal(journal, withPictures) {
+  const run = { key: state.runs.length, title: journal.title || journal.url, status: 'Fetching from Journi…', percent: 0, errors: [], refs: [], finished: false, failed: false, undone: false }
+  state.runs.push(run)
+  renderRuns()
+  try {
+    const moments = await loadMoments(journal)
+    const progress = await createEntries(run, journal, moments)
+    const pictures = withPictures ? await attachPictures(run, moments, progress.momentEntryIds) : null
+    const pictureText = pictures ? `, ${pictures.done} of ${pictures.total} pictures` : ''
+    updateRun(run, { finished: true, percent: 100, status: `${plural(progress.entries, 'entry')} created${pictureText}` })
+  } catch (e) {
+    updateRun(run, { failed: true, status: e.message })
+  }
+  return run
+}
+
+async function startImport() {
+  const picked = state.journals.filter((j) => j.selected)
+  if (!picked.length) return notify('warning', 'Tick at least one journal first.')
+  const withPictures = $('opt-photos').checked
+  $('import-btn').disabled = true
+  $('run-card').classList.remove('hidden')
+  $('done-row').classList.add('hidden')
+  state.runs = []
+  for (const journal of picked) await importJournal(journal, withPictures)
+  const ok = state.runs.filter((r) => r.finished).length
+  $('done-summary').textContent = `${ok} of ${state.runs.length} journal${state.runs.length === 1 ? '' : 's'} imported`
+  $('undo-btn').disabled = !state.runs.some((r) => r.refs.length)
+  $('undo-btn').textContent = 'Undo this import'
+  $('done-row').classList.remove('hidden')
+  $('import-btn').disabled = false
+  state.journals.forEach((j) => { j.selected = false })
+  render()
+}
+
+// ── Undo ─────────────────────────────────────────────────────────────────────
+
+async function undoImport() {
+  const runs = state.runs.filter((r) => r.refs.length)
+  if (!runs.length) return
+  const total = runs.reduce((n, r) => n + r.refs.length, 0)
+  const ok = await trek.confirm({
+    title: 'Undo import?',
+    message: `This deletes the ${plural(runs.length, 'journey')} this import created in TREK, with all their entries and pictures. This cannot be undone.`,
+    confirmLabel: 'Delete', cancelLabel: 'Keep', danger: true,
+  })
+  if (!ok) return
+  const btn = $('undo-btn')
+  btn.disabled = true
+  let deleted = 0
+  const errors = []
+  for (const run of runs) {
+    let remaining = [...run.refs].reverse()
+    for (let round = 0; remaining.length && round < 400; round++) {
+      const result = await call('/undo', { refs: remaining })
+      if (result?.error) { errors.push(result.error); break }
+      deleted += result.deleted || 0
+      errors.push(...(result.errors || []))
+      remaining = result.remaining || []
+      btn.textContent = `Undoing… ${deleted} / ${total}`
+    }
+    run.refs = []
+    updateRun(run, { status: 'Removed from TREK again', undone: true, percent: 0 })
+  }
+  btn.textContent = errors.length ? `Undone with ${plural(errors.length, 'error')}` : 'Undone'
+  if (errors.length) notify('warning', errors.slice(0, 3).join(' · '))
+}
+
+// ── Wiring ───────────────────────────────────────────────────────────────────
+
+$('login-btn').addEventListener('click', signIn)
+$('password').addEventListener('keydown', (e) => { if (e.key === 'Enter') signIn() })
+$('link-btn').addEventListener('click', addLink)
+$('link').addEventListener('keydown', (e) => { if (e.key === 'Enter') addLink() })
+$('import-btn').addEventListener('click', startImport)
+$('undo-btn').addEventListener('click', undoImport)
+$('again-btn').addEventListener('click', () => { $('run-card').classList.add('hidden'); state.runs = []; window.scrollTo(0, 0) })
+restoreSession()
+</script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "id": "journi-importer",
+  "name": "Journi Importer",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "author": "PhyberApex",
+  "description": "Import your Journi journals as TREK journeys: sign in, pick journals, and every moment becomes an entry with its pictures.",
+  "type": "page",
+  "trek": ">=4.2.0 <6.0.0",
+  "nativeModules": false,
+  "icon": "BookOpen",
+  "license": "MIT",
+  "permissions": [
+    "db:write:journal",
+    "http:outbound",
+    "http:outbound:www.journiapp.com"
+  ],
+  "requiredAddons": ["journey"],
+  "pluginDependencies": [],
+  "egress": [
+    "www.journiapp.com"
+  ]
+}
