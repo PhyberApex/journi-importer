@@ -58,6 +58,8 @@ JOURNI_EMAIL=… JOURNI_PASSWORD=… npm run test:e2e
 
 The end-to-end test starts the dev host, signs in to Journi with the account in the environment, imports the smallest journal that has pictures, attaches a few of them, and undoes everything again. Without the two variables it is skipped. The same test runs in GitHub Actions on every push and pull request, and every Monday morning, so a change on Journi's side shows up as a red run; the repository secrets `JOURNI_EMAIL` and `JOURNI_PASSWORD` feed it.
 
+Releases follow [RELEASING.md](./RELEASING.md).
+
 ## License
 
 MIT. Forked from the Journi import of [raduwolf12/trip-importer](https://github.com/raduwolf12/trip-importer) (MIT).

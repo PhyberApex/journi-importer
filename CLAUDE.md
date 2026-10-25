@@ -23,6 +23,10 @@ A TREK `page` plugin that imports Journi journals as TREK journeys and nothing e
 - `ctx.journal.createJourney` needs no trip. `addEntryPhoto` takes base64 bytes, images only, 10 MB max.
 - Sessions live in a `Map` in the plugin process; a host restart forgets them, which the client handles by clearing its stored handle when `/session` says `signedIn:false`.
 
+## Releasing
+
+See `RELEASING.md`. Short form: bump `version` in both manifests, add the changelog section, commit "Release vX.Y.Z", push, run `npx trek-plugin-sdk publish --repo PhyberApex/journi-importer --tag vX.Y.Z`, unsigned, then report the registry PR URL.
+
 ## Style
 
 Self-documenting code, comments only where the why is not obvious, functional style on the client.
