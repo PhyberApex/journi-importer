@@ -25,7 +25,7 @@ A TREK `page` plugin that imports Journi journals as TREK journeys and nothing e
 
 ## Releasing
 
-See `RELEASING.md`. Short form: bump `version` in both manifests, add the changelog section, commit "Release vX.Y.Z", push, run `npx trek-plugin-sdk publish --repo PhyberApex/journi-importer --tag vX.Y.Z`, unsigned, then report the registry PR URL.
+See `RELEASING.md`. Releases are signed and run through the **release** workflow (Actions → release → Run workflow with `version`, optional `notes`, optional `dry_run`); from the CLI: `gh workflow run release.yml -f version=X.Y.Z -f notes='- …'`. It runs the e2e suite, `scripts/prepare-release.js` bumps both manifests and the changelog, commits "Release vX.Y.Z" to main, then `publish --sign` tags, releases and opens the registry PR. Report the registry PR URL from the run summary. The signing key lives in the `TREK_SIGNING_KEY` secret and at `~/.trek-plugin/signing.key`; never ship unsigned again.
 
 ## Style
 
