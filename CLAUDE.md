@@ -6,7 +6,8 @@ A TREK `page` plugin that imports Journi journals as TREK journeys and nothing e
 
 - `server/index.js` — the whole backend: Journi login/session handling, the journal fetch with the Journi-to-moment reduction, the round-based `/import`, `/photo`, `/undo`. No local requires.
 - `client/index.html` — the whole UI. `<!-- trek:ui -->` pulls in the SDK design kit (`window.trek`, `.trek-*` classes) at dev/pack time; the file itself stays a plain page with one inline script. Modern JS is fine, the frame runs in the user's current browser.
-- No build step, no tests framework. `npx trek-plugin-sdk dev` serves the UI at `/preview` with routes proxied under `/api/<path>`; `pack` builds `plugin.zip`.
+- `test/e2e/import.test.js` — `node:test` suite that spawns the dev host and drives the routes against the real Journi account from `JOURNI_EMAIL` / `JOURNI_PASSWORD` (skipped when unset): login, journal fetch, import, pictures, undo. `.github/workflows/e2e.yml` runs it on push, pull request and a weekly cron with the repository secrets. It needs a Journi account with at least one journal that has moments and pictures.
+- No build step. `npx trek-plugin-sdk dev` serves the UI at `/preview` with routes proxied under `/api/<path>`; `pack` builds `plugin.zip`.
 
 ## Journi facts the code relies on
 
