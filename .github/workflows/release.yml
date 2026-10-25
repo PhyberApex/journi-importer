@@ -1,0 +1,97 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, like 1.1.0'
+        required: true
+      notes:
+        description: 'Changelog lines for this version, one per line starting with "- ". Only needed when CHANGELOG.md has no section for it yet.'
+        required: false
+      dry_run:
+        description: 'Check, pack and sign only. Nothing is committed, tagged, released or submitted.'
+        type: boolean
+        default: false
+
+concurrency:
+  group: journi-account
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release v${{ inputs.version }}${{ inputs.dry_run && ' (dry run)' || '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Check the inputs and the secrets
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must look like 1.2.3, got '$VERSION'"; exit 1; }
+          [ -n "$TREK_SIGNING_KEY" ] || { echo "::error::the TREK_SIGNING_KEY secret is missing"; exit 1; }
+          if [ "$DRY_RUN" != "true" ] && [ -z "$RELEASE_TOKEN" ]; then echo "::error::the RELEASE_TOKEN secret is missing; the registry PR cannot be opened with the workflow token"; exit 1; fi
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then echo "::error::tag v$VERSION already exists"; exit 1; fi
+          echo "SIGNING_KEY_FILE=$RUNNER_TEMP/signing.key" >> "$GITHUB_ENV"
+        env:
+          TREK_SIGNING_KEY: ${{ secrets.TREK_SIGNING_KEY }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+
+      - name: Run the end-to-end import against Journi
+        run: npm run test:e2e
+        env:
+          JOURNI_EMAIL: ${{ secrets.JOURNI_EMAIL }}
+          JOURNI_PASSWORD: ${{ secrets.JOURNI_PASSWORD }}
+
+      - name: Set the version in the manifests and the changelog
+        run: node scripts/prepare-release.js "$VERSION" "$NOTES"
+        env:
+          NOTES: ${{ inputs.notes }}
+
+      - name: Commit the release
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then echo "manifests already at $VERSION"; else git commit -am "Release v$VERSION" && git push; fi
+
+      - name: Write the signing key
+        run: |
+          umask 077
+          printf '%s\n' "$TREK_SIGNING_KEY" > "$SIGNING_KEY_FILE"
+        env:
+          TREK_SIGNING_KEY: ${{ secrets.TREK_SIGNING_KEY }}
+
+      - name: Dry run, check pack and sign
+        if: ${{ inputs.dry_run }}
+        run: |
+          npx trek-plugin-sdk status
+          npx trek-plugin-sdk pack
+          npx trek-plugin-sdk sign plugin.zip --key "$SIGNING_KEY_FILE"
+          { echo "## Dry run of v$VERSION"; echo; echo "Checks, pack and signature succeeded. Nothing was released."; echo; echo '```diff'; git diff; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the signed release and open the registry PR
+        if: ${{ !inputs.dry_run }}
+        run: |
+          gh auth setup-git
+          npx trek-plugin-sdk publish --repo "$GITHUB_REPOSITORY" --tag "v$VERSION" --sign "$SIGNING_KEY_FILE" --notes "$(node scripts/prepare-release.js --notes "$VERSION")" | tee publish.log
+          { echo "## Released v$VERSION"; echo; grep -Eo 'https://github.com/[^ ]+' publish.log | sort -u | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Forget the signing key
+        if: always()
+        run: rm -f "$SIGNING_KEY_FILE"
