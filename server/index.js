@@ -7,7 +7,8 @@ const JOURNI_LOGIN_URL = 'https://www.journiapp.com/api/v8.0/user/login'
 const JOURNI_PICTURE_BASE = 'https://www.journiapp.com/picture/'
 const JOURNI_PICTURE_GUID = /^[A-Za-z0-9_=-]{8,120}$/
 const JOURNI_USER_AGENT = 'TREK-journi-importer/1.0'
-const JOURNI_SESSION_TTL_MS = 60 * 60 * 1000
+const JOURNI_SESSION_IDLE_MS = 60 * 60 * 1000
+const JOURNI_SESSIONS_PER_USER = 5
 const JOURNI_CATEGORY_NAMES = { 1: 'Accommodation', 2: 'Activity', 3: 'Nature', 4: 'Food', 6: 'Shopping', 7: 'Nightlife', 8: 'Culture & Art', 10: 'Worth Seeing', 11: 'Transport', 12: 'Coffee & Drinks', 13: 'Entertainment', 14: 'Architecture', 15: 'Relax' }
 const JOURNI_SYSTEM_CATEGORY = { 100: 'stamp', 101: 'sticker', 102: 'flight', 103: 'weather' }
 
@@ -15,6 +16,8 @@ const JOURNI_SYSTEM_CATEGORY = { 100: 'stamp', 101: 'sticker', 102: 'flight', 10
 // rounds: it does what fits in this budget and hands back a cursor the client resends.
 const ROUND_BUDGET_MS = 6000
 const PICTURE_MAX_BYTES = 10 * 1024 * 1024
+const TITLE_MAX_CHARS = 500
+const STORY_MAX_CHARS = 50000
 
 const json = (obj) => ({ status: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify(obj) })
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -26,20 +29,19 @@ async function reporting(fn) {
   }
 }
 
-async function fetchWithTimeout(url, init, ms) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), ms)
-  try { return await fetch(url, { ...init, signal: controller.signal }) } finally { clearTimeout(timer) }
-}
+// The signal stays attached to the response, so reading the body counts against the same limit.
+const fetchWithTimeout = (url, init, ms) => fetch(url, { ...init, signal: AbortSignal.timeout(ms) })
 
 // ── Journi sessions ──────────────────────────────────────────────────────────
 // The `session` cookie Journi's login hands out lives only in this process, keyed by a random
-// handle the client holds, bound to the TREK user who signed in and dropped after an hour.
-// The password is used for the one login call and never kept anywhere.
+// handle the client holds, bound to the TREK user who signed in and dropped an hour after its
+// last use. The password is used for the one login call and never kept anywhere.
 const journiSessions = new Map()
 
-function pruneSessions() {
+function pruneSessions(userId) {
   for (const [handle, s] of journiSessions) if (s.expires < Date.now()) journiSessions.delete(handle)
+  const ofUser = [...journiSessions].filter(([, s]) => s.userId === userId).sort((a, b) => a[1].expires - b[1].expires)
+  ofUser.slice(0, Math.max(0, ofUser.length - (JOURNI_SESSIONS_PER_USER - 1))).forEach(([handle]) => journiSessions.delete(handle))
 }
 
 function sessionFor(req) {
@@ -49,8 +51,11 @@ function sessionFor(req) {
   const expired = found.expires < Date.now()
   const otherUser = found.userId != null && req.user?.id != null && found.userId !== req.user.id
   if (expired || otherUser) { journiSessions.delete(handle); return null }
+  found.expires = Date.now() + JOURNI_SESSION_IDLE_MS
   return found
 }
+
+const signedOutFor = (req, session) => !!req.body?.session && !session
 
 function journiHeaders(session, extra) {
   return { 'User-Agent': JOURNI_USER_AGENT, ...(session ? { Cookie: 'session=' + session.cookie } : {}), ...(extra || {}) }
@@ -62,6 +67,9 @@ function journiHeaders(session, extra) {
 const journiTripUrl = (slug) => JOURNI_API_BASE + encodeURIComponent(slug) + '/entries/0?nocache=' + crypto.randomUUID()
 
 const journiPictureUrl = (guid) => JOURNI_PICTURE_BASE + encodeURIComponent(guid) + '_mob_full.jpg'
+
+const PICTURE_EXTENSIONS = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif', 'image/heic': '.heic' }
+const pictureExtension = (contentType) => PICTURE_EXTENSIONS[contentType.split(';')[0].trim().toLowerCase()] || '.jpg'
 
 function journiSlugFromUrl(input) {
   const raw = String(input || '').trim()
@@ -161,15 +169,24 @@ function momentsFromEntries(entries) {
 
 const idOf = (res) => res?.id ?? res?.data?.id ?? null
 
+const clip = (value, max) => String(value ?? '').slice(0, max)
+
+const isDate = (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
+
 function entryInput(journalTitle, moment) {
-  const located = moment.lat != null && moment.lng != null
+  if (!moment || typeof moment !== 'object') throw new Error('not a moment')
+  if (!isDate(moment.date)) throw new Error('has no date')
+  const coords = validCoords(moment.lat, moment.lng)
+  const title = clip(moment.title, TITLE_MAX_CHARS).trim() || journalTitle
   return {
     entry_date: moment.date,
-    title: moment.title || journalTitle,
-    story: moment.story || '',
-    ...(located ? { location_name: moment.title || journalTitle, location_lat: moment.lat, location_lng: moment.lng } : {}),
+    title,
+    story: clip(moment.story, STORY_MAX_CHARS),
+    ...(coords ? { location_name: title, location_lat: coords.lat, location_lng: coords.lng } : {}),
   }
 }
+
+const momentLabel = (moment, position) => clip(moment?.title, 80).trim() || 'Moment ' + (position + 1)
 
 module.exports = definePlugin({
   async onLoad(ctx) { ctx.log.info('journi-importer loaded') },
@@ -194,8 +211,8 @@ module.exports = definePlugin({
           const profile = await res.json().catch(() => null)
           const journals = (Array.isArray(profile?.trips) ? profile.trips : []).filter((t) => t && !t.deleted && t.url).map(journalSummary)
           const handle = crypto.randomUUID() + crypto.randomUUID()
-          pruneSessions()
-          journiSessions.set(handle, { cookie, userId: req.user?.id ?? null, expires: Date.now() + JOURNI_SESSION_TTL_MS, firstName: profile?.firstName || null, journals })
+          pruneSessions(req.user?.id ?? null)
+          journiSessions.set(handle, { cookie, userId: req.user?.id ?? null, expires: Date.now() + JOURNI_SESSION_IDLE_MS, firstName: profile?.firstName || null, journals })
           return { ok: true, session: handle, firstName: profile?.firstName || null, journals }
         }))
       },
@@ -211,7 +228,8 @@ module.exports = definePlugin({
     {
       method: 'POST', path: '/logout', auth: true,
       async handler(req) {
-        journiSessions.delete(String(req.body?.session || ''))
+        const handle = String(req.body?.session || '')
+        if (sessionFor(req)) journiSessions.delete(handle)
         return json({ ok: true })
       },
     },
@@ -225,7 +243,7 @@ module.exports = definePlugin({
         const slug = journiSlugFromUrl(req.body?.url)
         if (!slug) return json({ error: 'That doesn\'t look like a Journi journal link — expected something like https://www.journiapp.com/app/j/my-journal' })
         const session = sessionFor(req)
-        const signedOut = !!req.body?.session && !session
+        const signedOut = signedOutFor(req, session)
         return json(await reporting(async () => {
           const res = await fetchWithTimeout(journiTripUrl(slug), { headers: journiHeaders(session, { Accept: 'application/json' }) }, 6000)
           if (res.status === 404) return { error: 'Journi has no journal at "' + slug + '" — check the link' }
@@ -244,25 +262,30 @@ module.exports = definePlugin({
       },
     },
 
-    // Creates the journey on the first round, then one entry per moment of the window the
-    // client sent (starting at progress.next) until the round budget runs out. Entry ids go
-    // back out through progress so the client can attach pictures and undo.
+    // The first round only creates the journey, so its id reaches the client before anything
+    // else can go wrong. Every later round creates one entry per moment of the window the
+    // client sent (starting at progress.next) until the round budget runs out, and answers with
+    // the entry ids of that round in `created` so the client can attach pictures and undo.
+    // Whatever fails, the answer carries `progress`, so the client never loses the journey id.
     {
       method: 'POST', path: '/import', auth: true,
       async handler(req, ctx) {
-        const journal = req.body?.journal || {}
+        const journal = req.body?.journal && typeof req.body.journal === 'object' ? req.body.journal : {}
         const moments = Array.isArray(req.body?.moments) ? req.body.moments : []
-        const offset = Number(req.body?.offset) || 0
-        const total = Number(req.body?.total) || offset + moments.length
-        const title = String(journal.title || '').trim() || 'Journi journal'
-        const progress = { journeyId: null, next: 0, entries: 0, momentEntryIds: {}, done: false, ...(req.body?.progress || {}) }
+        const offset = Math.max(0, Math.trunc(Number(req.body?.offset)) || 0)
+        const total = Math.max(offset + moments.length, Math.trunc(Number(req.body?.total)) || 0)
+        const title = clip(journal.title, TITLE_MAX_CHARS).trim() || 'Journi journal'
+        const subtitle = clip(journal.subtitle, TITLE_MAX_CHARS).trim() || undefined
+        const given = req.body?.progress && typeof req.body.progress === 'object' ? req.body.progress : {}
+        const progress = { journeyId: given.journeyId ?? null, next: Math.max(0, Math.trunc(Number(given.next)) || 0), entries: Math.max(0, Math.trunc(Number(given.entries)) || 0), done: false }
+        const created = {}
         const errors = []
-        return json(await reporting(async () => {
+        try {
           const deadline = Date.now() + ROUND_BUDGET_MS
           if (!progress.journeyId) {
-            const journey = await ctx.journal.createJourney({ title, subtitle: journal.subtitle || undefined })
-            progress.journeyId = idOf(journey)
-            if (!progress.journeyId) return { error: 'TREK created no journey for "' + title + '"', progress }
+            progress.journeyId = idOf(await ctx.journal.createJourney({ title, subtitle }))
+            if (!progress.journeyId) return json({ error: 'TREK created no journey for "' + title + '"', progress })
+            return json({ ok: true, progress, created, errors })
           }
           let i = Math.max(progress.next, offset)
           for (; i < offset + moments.length && Date.now() < deadline; i++) {
@@ -270,14 +293,16 @@ module.exports = definePlugin({
             try {
               const entryId = idOf(await ctx.journal.createEntry(progress.journeyId, entryInput(title, moment)))
               progress.entries++
-              if (entryId && moment.id != null) progress.momentEntryIds[moment.id] = entryId
-            } catch (e) { errors.push((moment.title || 'Moment ' + (i + 1)) + ': ' + e.message) }
+              if (entryId && moment.id != null) created[moment.id] = entryId
+            } catch (e) { errors.push(momentLabel(moment, i) + ': ' + e.message) }
             await sleep(60)
           }
           progress.next = i
           progress.done = i >= total
-          return { ok: true, progress, errors }
-        }))
+          return json({ ok: true, progress, created, errors })
+        } catch (e) {
+          return json({ error: e?.message || String(e), progress, created, errors })
+        }
       },
     },
 
@@ -291,14 +316,19 @@ module.exports = definePlugin({
         const entryId = Number(req.body?.entryId)
         if (!JOURNI_PICTURE_GUID.test(guid)) return json({ error: 'Not a Journi picture id' })
         if (!entryId) return json({ error: 'entryId required' })
+        const session = sessionFor(req)
+        const signedOut = signedOutFor(req, session)
+        if (signedOut) return json({ error: 'Your Journi session has expired', signedOut })
         return json(await reporting(async () => {
-          const res = await fetchWithTimeout(journiPictureUrl(guid), { headers: journiHeaders(sessionFor(req)) }, 5000)
+          const res = await fetchWithTimeout(journiPictureUrl(guid), { headers: journiHeaders(session) }, 6000)
           if (!res.ok) return { error: 'Journi answered HTTP ' + res.status + ' for the picture', status: res.status }
           const contentType = res.headers.get('content-type') || 'image/jpeg'
           if (!/^image\//.test(contentType)) return { error: 'Journi returned ' + contentType + ' instead of an image', status: res.status }
+          if (Number(res.headers.get('content-length')) > PICTURE_MAX_BYTES) return { error: 'Picture too large' }
           const buf = Buffer.from(await res.arrayBuffer())
           if (buf.length > PICTURE_MAX_BYTES) return { error: 'Picture too large' }
-          const added = await ctx.journal.addEntryPhoto(entryId, { name: guid + '.jpg', content_base64: buf.toString('base64') })
+          const extension = pictureExtension(contentType)
+          const added = await ctx.journal.addEntryPhoto(entryId, { name: guid + extension, content_base64: buf.toString('base64') })
           return { ok: true, photoId: idOf(added), bytes: buf.length }
         }))
       },
@@ -313,10 +343,11 @@ module.exports = definePlugin({
           const errors = []
           let i = 0
           for (; i < refs.length && Date.now() < deadline; i++) {
-            const ref = refs[i]
+            const ref = refs[i] && typeof refs[i] === 'object' ? refs[i] : {}
             try {
               if (ref.type === 'entry') await ctx.journal.deleteEntry(Number(ref.id))
               else if (ref.type === 'journey') await ctx.journal.deleteJourney(Number(ref.id))
+              else throw new Error('unknown ref')
             } catch (e) { errors.push(ref.type + ' ' + ref.id + ': ' + e.message) }
           }
           return { deleted: i - errors.length, remaining: refs.slice(i), errors, done: i >= refs.length }

@@ -62,7 +62,7 @@
       <input class="trek-input" type="password" id="password" placeholder="Journi password" autocomplete="off" />
       <button class="trek-btn trek-btn--primary" id="login-btn">Sign in</button>
     </div>
-    <div class="note">Your password goes once from this page to your TREK server, which signs in to Journi with it and keeps only the resulting session — in memory, for an hour or until you sign out. Nothing is written to disk.</div>
+    <div class="note">Your password goes once from this page to your TREK server, which signs in to Journi with it and keeps only the resulting session — in memory, until an hour passes without you using it or you sign out. Nothing is written to disk.</div>
     <div class="divider">or paste a public journal link</div>
     <div class="form-row">
       <input class="trek-input" type="text" id="link" placeholder="https://www.journiapp.com/app/j/my-journal" />
@@ -104,7 +104,9 @@ const notify = (level, message) => trek.notify(level, message, Math.min(15000, M
 
 const IMPORT_WINDOW_ITEMS = 40
 const IMPORT_WINDOW_BYTES = 60000
+const MAX_ROUNDS = 400
 const PICTURE_PAUSE_MS = 250
+const PICTURE_ERRORS_SHOWN = 5
 const SESSION_KEY = 'journi-session'
 
 const state = {
@@ -122,6 +124,7 @@ const setBusy = (btn, busy, busyLabel) => {
 }
 
 async function signIn() {
+  if ($('login-btn').disabled) return
   const email = $('email').value.trim()
   const password = $('password').value
   if (!email || !password) return notify('warning', 'Enter your Journi email and password first.')
@@ -148,21 +151,31 @@ function applySession(token, firstName, journals) {
   render()
 }
 
+// A failed call keeps the stored handle, so a hiccup at page load does not sign the user out.
 async function restoreSession() {
   const saved = await trek.session.get(SESSION_KEY).catch(() => undefined)
   if (!saved?.token) return
   const result = await call('/session', { session: saved.token }).catch(() => null)
   if (result?.signedIn) applySession(saved.token, result.firstName, result.journals)
-  else await trek.session.remove(SESSION_KEY).catch(() => undefined)
+  else if (result) await trek.session.remove(SESSION_KEY).catch(() => undefined)
 }
 
-async function signOut() {
-  if (state.session) await call('/logout', { session: state.session }).catch(() => undefined)
+async function dropSession() {
   await trek.session.remove(SESSION_KEY).catch(() => undefined)
   state.session = null
   state.firstName = null
   state.journals = state.journals.filter((j) => j.fromLink)
   render()
+}
+
+async function signOut() {
+  if (state.session) await call('/logout', { session: state.session }).catch(() => undefined)
+  await dropSession()
+}
+
+async function sessionExpired() {
+  await dropSession()
+  return new Error('Your Journi session has expired — sign in again')
 }
 
 async function addLink() {
@@ -191,7 +204,7 @@ async function addLink() {
 
 const dayOf = (ms) => (ms ? new Date(ms).toISOString().slice(0, 10) : null)
 const dateRange = (j) => [dayOf(j.start), dayOf(j.end)].filter(Boolean).join(' → ')
-const plural = (n, word) => `${n} ${n === 1 ? word : word.replace(/y$/, 'ie') + 's'}`
+const plural = (n, word) => `${n} ${n === 1 ? word : word.replace(/([^aeiou])y$/, '$1ie') + 's'}`
 
 function journalMeta(j) {
   return [dateRange(j), j.entryCount != null ? plural(j.entryCount, 'moment') : null, j.pictureCount != null ? plural(j.pictureCount, 'picture') : null]
@@ -271,31 +284,37 @@ async function loadMoments(journal) {
   if (journal.moments) return journal.moments
   const result = await call('/journal', { url: journal.url, session: state.session })
   if (result?.error) throw new Error(result.error)
-  if (result.signedOut) {
-    await trek.session.remove(SESSION_KEY).catch(() => undefined)
-    throw new Error('Your Journi session has expired — sign in again')
-  }
+  if (result.signedOut) throw await sessionExpired()
   if (result.private) throw new Error('Journi would not show the moments of this journal (it is private and you are not signed in as its owner)')
   return result.moments
 }
 
+// Every answer is folded into run.refs right away, so an undo after a failed round still
+// reaches the journey and every entry that exists.
+function recordRound(run, result, momentEntryIds) {
+  const journeyId = result?.progress?.journeyId
+  if (journeyId && !run.refs.some((r) => r.type === 'journey' && r.id === journeyId)) run.refs.unshift({ type: 'journey', id: journeyId })
+  Object.entries(result?.created || {}).forEach(([momentId, entryId]) => {
+    momentEntryIds[momentId] = entryId
+    run.refs.push({ type: 'entry', id: entryId })
+  })
+  run.errors.push(...(result?.errors || []))
+}
+
 async function createEntries(run, journal, moments) {
   const total = moments.length
-  let progress = { journeyId: null, next: 0, entries: 0, momentEntryIds: {}, done: false }
+  const momentEntryIds = {}
+  let progress = { journeyId: null, next: 0, entries: 0, done: false }
   const journalInput = { title: journal.title, subtitle: dateRange(journal) || undefined }
-  for (let round = 0; !progress.done && round < 400; round++) {
+  for (let round = 0; !progress.done; round++) {
+    if (round >= MAX_ROUNDS) throw new Error(`Import gave up after ${MAX_ROUNDS} rounds with ${progress.next} of ${total} moments created`)
     const result = await call('/import', { journal: journalInput, moments: importWindow(moments, progress.next), offset: progress.next, total, progress })
-    if (result?.error) {
-      if (result.progress?.journeyId) run.refs.unshift({ type: 'journey', id: result.progress.journeyId })
-      throw new Error(result.error)
-    }
-    if (result.progress.journeyId && !run.refs.length) run.refs.unshift({ type: 'journey', id: result.progress.journeyId })
-    run.errors.push(...(result.errors || []))
+    recordRound(run, result, momentEntryIds)
+    if (result?.error) throw new Error(result.error)
     progress = result.progress
     updateRun(run, { status: `Creating entries… ${Math.min(progress.next, total)} / ${total}`, percent: total ? Math.round((progress.next / total) * 50) : 50 })
   }
-  run.refs.push(...Object.values(progress.momentEntryIds).map((id) => ({ type: 'entry', id })))
-  return progress
+  return { ...progress, momentEntryIds }
 }
 
 async function attachPictures(run, moments, momentEntryIds) {
@@ -308,8 +327,17 @@ async function attachPictures(run, moments, momentEntryIds) {
       break
     }
     const result = await call('/photo', { session: state.session, entryId: job.entryId, guid: job.guid }).catch((e) => ({ error: e.message }))
+    if (result?.signedOut) {
+      await dropSession()
+      run.errors.push(`Your Journi session expired after ${done} of ${total} pictures — sign in again and re-import to get the rest`)
+      break
+    }
     if (result?.ok) done++
-    else { failed++; if (result?.status === 403) forbidden++ }
+    else {
+      failed++
+      if (result?.status === 403) forbidden++
+      if (failed <= PICTURE_ERRORS_SHOWN) run.errors.push(`Picture ${job.guid.slice(0, 8)}…: ${result?.error || 'failed'}`)
+    }
     updateRun(run, { status: `Fetching pictures… ${done} / ${total}`, percent: 50 + Math.round(((done + failed) / total) * 50) })
     await pause(PICTURE_PAUSE_MS)
   }
@@ -369,18 +397,21 @@ async function undoImport() {
   const errors = []
   for (const run of runs) {
     let remaining = [...run.refs].reverse()
-    for (let round = 0; remaining.length && round < 400; round++) {
-      const result = await call('/undo', { refs: remaining })
+    for (let round = 0; remaining.length && round < MAX_ROUNDS; round++) {
+      const result = await call('/undo', { refs: remaining }).catch((e) => ({ error: e.message }))
       if (result?.error) { errors.push(result.error); break }
       deleted += result.deleted || 0
       errors.push(...(result.errors || []))
       remaining = result.remaining || []
       btn.textContent = `Undoing… ${deleted} / ${total}`
     }
-    run.refs = []
-    updateRun(run, { status: 'Removed from TREK again', undone: true, percent: 0 })
+    run.refs = [...remaining].reverse()
+    if (remaining.length) updateRun(run, { status: `Undo stopped with ${plural(remaining.length, 'item')} still in TREK — try again`, failed: true })
+    else updateRun(run, { status: 'Removed from TREK again', undone: true, percent: 0 })
   }
-  btn.textContent = errors.length ? `Undone with ${plural(errors.length, 'error')}` : 'Undone'
+  const unfinished = runs.some((r) => r.refs.length)
+  btn.textContent = unfinished ? 'Retry undo' : errors.length ? `Undone with ${plural(errors.length, 'error')}` : 'Undone'
+  btn.disabled = !unfinished
   if (errors.length) notify('warning', errors.slice(0, 3).join(' · '))
 }
 
