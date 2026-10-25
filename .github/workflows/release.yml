@@ -29,7 +29,6 @@ jobs:
     env:
       VERSION: ${{ inputs.version }}
       GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
-      SIGNING_KEY_FILE: ${{ runner.temp }}/signing.key
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,6 +46,7 @@ jobs:
           [ -n "$TREK_SIGNING_KEY" ] || { echo "::error::the TREK_SIGNING_KEY secret is missing"; exit 1; }
           if [ "$DRY_RUN" != "true" ] && [ -z "$RELEASE_TOKEN" ]; then echo "::error::the RELEASE_TOKEN secret is missing; the registry PR cannot be opened with the workflow token"; exit 1; fi
           if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then echo "::error::tag v$VERSION already exists"; exit 1; fi
+          echo "SIGNING_KEY_FILE=$RUNNER_TEMP/signing.key" >> "$GITHUB_ENV"
         env:
           TREK_SIGNING_KEY: ${{ secrets.TREK_SIGNING_KEY }}
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
