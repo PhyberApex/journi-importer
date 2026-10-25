@@ -1,15 +1,22 @@
 const { test, describe, before, after } = require('node:test')
 const assert = require('node:assert/strict')
 const { spawn } = require('node:child_process')
+const net = require('node:net')
 const path = require('node:path')
 
 const creds = { email: process.env.JOURNI_EMAIL, password: process.env.JOURNI_PASSWORD }
 const hasCreds = Boolean(creds.email && creds.password)
-const PORT = Number(process.env.E2E_PORT) || 4399
-const BASE = `http://127.0.0.1:${PORT}`
 const ROOT = path.resolve(__dirname, '..', '..')
 const IMPORT_WINDOW_ITEMS = 40
 const PICTURE_SAMPLE = 3
+
+let BASE
+
+const freePort = () => new Promise((resolve, reject) => {
+  const server = net.createServer()
+  server.once('error', reject)
+  server.listen(0, '127.0.0.1', () => { const { port } = server.address(); server.close(() => resolve(port)) })
+})
 
 const call = async (route, body) => {
   const res = await fetch(`${BASE}/api${route}`, {
@@ -31,9 +38,9 @@ const waitForHost = async (deadline) => {
   throw new Error(`dev host did not come up on ${BASE}`)
 }
 
-const startDevHost = () => {
+const startDevHost = (port) => {
   const cli = path.join(ROOT, 'node_modules', 'trek-plugin-sdk', 'dist', 'cli', 'trek-plugin.js')
-  const child = spawn(process.execPath, [cli, 'dev', ROOT, '--port', String(PORT)], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, [cli, 'dev', ROOT, '--port', String(port)], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] })
   child.stdout.on('data', (d) => process.env.E2E_VERBOSE && process.stdout.write(d))
   child.stderr.on('data', (d) => process.stderr.write(d))
   return child
@@ -49,20 +56,29 @@ describe('Journi import end to end', { skip: hasCreds ? false : 'JOURNI_EMAIL an
   let session
   let journal
   let moments
-  let progress
+  let momentEntryIds
   const refs = []
 
+  const recordRound = (result) => {
+    const journeyId = result.progress?.journeyId
+    if (journeyId && !refs.some((r) => r.type === 'journey' && r.id === journeyId)) refs.push({ type: 'journey', id: journeyId })
+    refs.push(...Object.values(result.created || {}).map((id) => ({ type: 'entry', id })))
+  }
+
   before(async () => {
-    host = startDevHost()
+    const port = Number(process.env.E2E_PORT) || await freePort()
+    BASE = `http://127.0.0.1:${port}`
+    host = startDevHost(port)
     await waitForHost(Date.now() + 30000)
   })
 
   after(async () => {
-    if (refs.length) {
+    try {
       let remaining = [...refs].reverse()
-      while (remaining.length) remaining = (await call('/undo', { refs: remaining })).remaining
+      for (let round = 0; remaining.length && round < 50; round++) remaining = (await call('/undo', { refs: remaining })).remaining
+    } finally {
+      host?.kill()
     }
-    host?.kill()
   })
 
   test('rejects a wrong password with a readable error', async () => {
@@ -108,25 +124,48 @@ describe('Journi import end to end', { skip: hasCreds ? false : 'JOURNI_EMAIL an
   })
 
   test('creates a journey with one entry per moment', async () => {
-    progress = { journeyId: null, next: 0, entries: 0, momentEntryIds: {}, done: false }
+    let progress = { journeyId: null, next: 0, entries: 0, done: false }
+    momentEntryIds = {}
     const journalInput = { title: journal.title, subtitle: 'e2e' }
+    const first = await call('/import', { journal: journalInput, moments: moments.slice(0, IMPORT_WINDOW_ITEMS), offset: 0, total: moments.length, progress })
+    recordRound(first)
+    assert.equal(first.error, undefined, first.error)
+    assert.ok(first.progress.journeyId, 'first round returned no journey id')
+    assert.deepEqual(first.created, {}, 'first round should only create the journey')
+    assert.equal(first.progress.done, false)
+    progress = first.progress
     for (let round = 0; !progress.done && round < 100; round++) {
       const window = moments.slice(progress.next, progress.next + IMPORT_WINDOW_ITEMS)
       const result = await call('/import', { journal: journalInput, moments: window, offset: progress.next, total: moments.length, progress })
-      if (result.progress?.journeyId && !refs.length) refs.push({ type: 'journey', id: result.progress.journeyId })
+      recordRound(result)
       assert.equal(result.error, undefined, result.error)
       assert.deepEqual(result.errors, [], 'entries failed')
+      Object.assign(momentEntryIds, result.created)
       progress = result.progress
     }
-    refs.push(...Object.values(progress.momentEntryIds).map((id) => ({ type: 'entry', id })))
     assert.equal(progress.done, true)
     assert.equal(progress.entries, moments.length)
-    assert.equal(Object.keys(progress.momentEntryIds).length, moments.length)
+    assert.equal(Object.keys(momentEntryIds).length, moments.length)
+  })
+
+  test('reports broken moments without losing the journey', async () => {
+    const journalInput = { title: 'e2e broken moments', subtitle: 'e2e' }
+    const first = await call('/import', { journal: journalInput, moments: [], offset: 0, total: 2, progress: { journeyId: null, next: 0, entries: 0, done: false } })
+    recordRound(first)
+    assert.ok(first.progress.journeyId)
+    const result = await call('/import', { journal: journalInput, moments: [null, { id: 7, date: 'yesterday', title: 'No real date' }], offset: 0, total: 2, progress: first.progress })
+    recordRound(result)
+    assert.equal(result.error, undefined, result.error)
+    assert.equal(result.progress.journeyId, first.progress.journeyId)
+    assert.equal(result.errors.length, 2, JSON.stringify(result.errors))
+    assert.match(result.errors[1], /No real date: has no date/)
+    assert.deepEqual(result.created, {})
+    assert.equal(result.progress.done, true)
   })
 
   test('fetches pictures from Journi and attaches them to their entry', async () => {
     const jobs = moments
-      .flatMap((m) => m.pictures.map((p) => ({ entryId: progress.momentEntryIds[m.id], guid: p.guid })))
+      .flatMap((m) => m.pictures.map((p) => ({ entryId: momentEntryIds[m.id], guid: p.guid })))
       .slice(0, PICTURE_SAMPLE)
     for (const job of jobs) {
       const result = await call('/photo', { session, ...job })
@@ -136,7 +175,7 @@ describe('Journi import end to end', { skip: hasCreds ? false : 'JOURNI_EMAIL an
   })
 
   test('refuses anything that is not a Journi picture id', async () => {
-    const result = await call('/photo', { session, entryId: refs.at(-1).id, guid: '../etc/passwd' })
+    const result = await call('/photo', { session, entryId: refs.find((r) => r.type === 'entry').id, guid: '../etc/passwd' })
     assert.match(result.error, /Not a Journi picture id/)
   })
 

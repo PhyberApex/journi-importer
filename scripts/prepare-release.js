@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 const fs = require('node:fs')
 const path = require('node:path')
+const { execFileSync } = require('node:child_process')
 
 const root = path.resolve(__dirname, '..')
 const changelogPath = path.join(root, 'CHANGELOG.md')
-const manifestPaths = ['trek-plugin.json', 'package.json'].map((f) => path.join(root, f))
+const manifestPath = path.join(root, 'trek-plugin.json')
 
-const readChangelog = () => fs.readFileSync(changelogPath, 'utf8')
+const readChangelog = () => fs.readFileSync(changelogPath, 'utf8').replace(/^﻿/, '').replace(/\r\n?/g, '\n')
 
 const sectionOf = (changelog, version) => {
   const lines = changelog.split('\n')
@@ -16,15 +17,21 @@ const sectionOf = (changelog, version) => {
   return lines.slice(start + 1, end < 0 ? undefined : end).join('\n').trim()
 }
 
-const setVersion = (file, version) =>
-  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/("version":\s*")[^"]*(")/, `$1${version}$2`))
-
 const ensureSection = (version, notes) => {
   const changelog = readChangelog()
   if (sectionOf(changelog, version)) return
   if (!notes.trim()) throw new Error(`CHANGELOG.md has no "## ${version}" section and no notes were given`)
-  fs.writeFileSync(changelogPath, changelog.replace(/^# Changelog\n+/, `# Changelog\n\n## ${version}\n\n${notes.trim()}\n\n`))
+  const header = changelog.match(/^# Changelog\n+/)
+  if (!header) throw new Error('CHANGELOG.md must start with a "# Changelog" line')
+  fs.writeFileSync(changelogPath, `# Changelog\n\n## ${version}\n\n${notes.trim()}\n\n` + changelog.slice(header[0].length))
 }
+
+const setManifestVersion = (version) =>
+  fs.writeFileSync(manifestPath, fs.readFileSync(manifestPath, 'utf8').replace(/("version":\s*")[^"]*(")/, (_, open, close) => open + version + close))
+
+// npm bumps package.json and package-lock.json together and keeps their formatting.
+const setPackageVersion = (version) =>
+  execFileSync('npm', ['version', version, '--no-git-tag-version', '--allow-same-version'], { cwd: root, stdio: 'ignore' })
 
 const [first, ...rest] = process.argv.slice(2)
 if (first === '--notes') {
@@ -34,5 +41,6 @@ if (first === '--notes') {
 } else {
   if (!/^\d+\.\d+\.\d+$/.test(first || '')) throw new Error('usage: prepare-release.js <version> [notes] | --notes <version>')
   ensureSection(first, rest[0] || '')
-  manifestPaths.forEach((file) => setVersion(file, first))
+  setManifestVersion(first)
+  setPackageVersion(first)
 }

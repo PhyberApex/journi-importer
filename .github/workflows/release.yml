@@ -14,8 +14,10 @@ on:
         type: boolean
         default: false
 
+# Its own group: GitHub keeps only one pending run per group, so a release queued behind an e2e
+# run would be dropped by the next push to main if they shared one.
 concurrency:
-  group: journi-account
+  group: release
   cancel-in-progress: false
 
 permissions:
@@ -42,14 +44,18 @@ jobs:
 
       - name: Check the inputs and the secrets
         run: |
+          [ "$GITHUB_REF" = "refs/heads/main" ] || { echo "::error::releases are cut from main, not from $GITHUB_REF_NAME"; exit 1; }
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must look like 1.2.3, got '$VERSION'"; exit 1; }
           [ -n "$TREK_SIGNING_KEY" ] || { echo "::error::the TREK_SIGNING_KEY secret is missing"; exit 1; }
+          [ -n "$JOURNI_EMAIL" ] && [ -n "$JOURNI_PASSWORD" ] || { echo "::error::the JOURNI_EMAIL and JOURNI_PASSWORD secrets are missing, so the end-to-end test would be skipped"; exit 1; }
           if [ "$DRY_RUN" != "true" ] && [ -z "$RELEASE_TOKEN" ]; then echo "::error::the RELEASE_TOKEN secret is missing; the registry PR cannot be opened with the workflow token"; exit 1; fi
           if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then echo "::error::tag v$VERSION already exists"; exit 1; fi
           echo "SIGNING_KEY_FILE=$RUNNER_TEMP/signing.key" >> "$GITHUB_ENV"
         env:
           TREK_SIGNING_KEY: ${{ secrets.TREK_SIGNING_KEY }}
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          JOURNI_EMAIL: ${{ secrets.JOURNI_EMAIL }}
+          JOURNI_PASSWORD: ${{ secrets.JOURNI_PASSWORD }}
           DRY_RUN: ${{ inputs.dry_run }}
 
       - name: Run the end-to-end import against Journi

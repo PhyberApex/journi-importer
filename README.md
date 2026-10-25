@@ -32,7 +32,7 @@ The plugin requires the **journey** addon, because that is where the imported jo
 
 ### What happens with your Journi password
 
-The password travels once from the plugin page to your TREK server, which sends it to Journi's login endpoint over HTTPS and keeps only the session cookie Journi answers with. That cookie lives in the plugin process memory, bound to your TREK user, for one hour or until you sign out. It is never written to the database or to disk, and the plugin page keeps nothing but an opaque handle to it. If you prefer, you can change your Journi password after the import.
+The password travels once from the plugin page to your TREK server, which sends it to Journi's login endpoint over HTTPS and keeps only the session cookie Journi answers with. That cookie lives in the plugin process memory, bound to your TREK user, until an hour passes without you using it or you sign out. It is never written to the database or to disk, and the plugin page keeps nothing but an opaque handle to it. If you prefer, you can change your Journi password after the import.
 
 ## Setup
 
