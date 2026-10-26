@@ -23,6 +23,11 @@ concurrency:
 permissions:
   contents: write
 
+# Explicit bash so every step runs with pipefail: a failed publish must not be masked by `tee`.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   release:
     name: Release v${{ inputs.version }}${{ inputs.dry_run && ' (dry run)' || '' }}
@@ -71,9 +76,10 @@ jobs:
 
       - name: Commit the release
         if: ${{ !inputs.dry_run }}
+        # Global identity: the SDK also commits inside a temporary clone of the registry fork.
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git diff --quiet; then echo "manifests already at $VERSION"; else git commit -am "Release v$VERSION" && git push; fi
 
       - name: Write the signing key
@@ -96,7 +102,7 @@ jobs:
         run: |
           gh auth setup-git
           npx trek-plugin-sdk publish --repo "$GITHUB_REPOSITORY" --tag "v$VERSION" --sign "$SIGNING_KEY_FILE" --notes "$(node scripts/prepare-release.js --notes "$VERSION")" | tee publish.log
-          { echo "## Released v$VERSION"; echo; grep -Eo 'https://github.com/[^ ]+' publish.log | sort -u | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "## Released v$VERSION"; echo; { grep -Eo 'https://github.com/[^ ]+' publish.log || true; } | sort -u | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Forget the signing key
         if: always()
