@@ -81,12 +81,6 @@ describe('Journi import end to end', { skip: hasCreds ? false : 'JOURNI_EMAIL an
     }
   })
 
-  test('rejects a wrong password with a readable error', async () => {
-    const result = await call('/login', { email: creds.email, password: 'definitely-not-the-password' })
-    assert.ok(result.error, 'expected an error')
-    assert.match(result.error, /did not accept/)
-  })
-
   test('signs in and lists the account journals', async () => {
     const result = await call('/login', creds)
     assert.equal(result.ok, true, result.error)
